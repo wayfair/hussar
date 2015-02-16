@@ -1,0 +1,181 @@
+#!/bin/bash
+
+## general purpose #############################################################
+
+function build_full_file_list () {
+   local project_exclude_dirs=()
+   if [[ "${#PROJECT_EXCLUDE_DIRS[@]}" -gt 0 ]]; then
+      for dir in "${PROJECT_EXCLUDE_DIRS[@]}"; do
+         project_exclude_dirs+=( -o -path '*/'"${dir}" )
+      done
+   fi
+
+   find "${PROJECT_DIR}"              \
+      \(    -path '*/.git'            \
+         "${project_exclude_dirs[@]}" \
+      \) -prune                       \
+      -o                              \
+      -type f -name '*.php'           \
+      -not                            \
+      \(                              \
+            -name 'auto_prepend.php'  \
+         -o -name '*autoload*.php'    \
+      \) -print
+}
+
+## git operations ##############################################################
+
+function git_commit_hash () {
+   local readonly revision="${1-HEAD}"
+
+   if [[ "${revision}" == fork-point ]]; then
+      require_option 'revision'
+      git merge-base origin/master "${OPTIONS['revision']}"
+   else
+      git rev-parse --quiet --verify "${revision}"           \
+      || git rev-parse --quiet --verify "origin/${revision}" \
+      || fail "Unknown revision: ${revision}"
+   fi
+}
+
+function git_files_in_revision () {
+   local readonly revision="$1"
+   local readonly state="$2"
+
+   local files filter
+   if [[ "${revision}" == $(git_commit_hash) ]]; then
+      if [[ "$(git log -1 --format='%cn')" == hussar ]]; then
+         files=$(git diff --name-only --diff-filter 'ACMRTUX' HEAD~...HEAD 2> /dev/null)
+         debug "patchfile commit: HEAD~...HEAD ("$(echo "${files}" | wc -l)" files)"
+      else
+         files=
+         debug 'identical HEAD and revision'
+      fi
+   elif git merge-base --is-ancestor HEAD "${revision}"; then
+      if [[ "${state}" == present ]]; then filter='ACMRTUX'; else filter='D'; fi
+      files=$(git diff --name-only --diff-filter "${filter}" "HEAD...${revision}" 2> /dev/null)
+      debug "HEAD...${revision} ("$(echo "${files}" | wc -l)" files ${state})"
+   else
+      if [[ "${state}" == present ]]; then filter='DCMRTUX'; else filter='A'; fi
+      files=$(git diff --name-only --diff-filter "${filter}" "${revision}...HEAD" 2> /dev/null)
+      debug "${revision}...HEAD ("$(echo "${files}" | wc -l)" files ${state})"
+   fi
+   echo "${files}"
+}
+
+function git_files_in_patch () {
+   local readonly file="$1"
+
+   local files
+   # --numstat excludes renames, so use --summary as well
+   files=$(
+      git apply --numstat "${file}" \
+         | awk '{print $3}' 2> /dev/null
+
+      git apply --summary "${file}" \
+         | perl -ne '
+               next unless (/^\s+rename/);
+               s/^\s+rename (.*){(.*) => .*$/$1$2/;
+               print;
+           ' 2> /dev/null
+   )
+   debug "patchfile ("$(echo "${files}" | wc -l)" files)"
+   echo "${files}"
+}
+
+## options #####################################################################
+
+function set_option () {
+   local readonly key="$1" val="${2-1}" cmd="${3-}" msg="${4-}"
+
+   if [[ "${cmd}" ]] && { ! ${cmd} &> /dev/null ; }; then
+      fail "${msg}"
+   fi
+
+   OPTIONS["${key}"]="${val}"
+}
+
+function if_option () {
+   local readonly key="$1" cmd="${@:2}"
+
+   if [[ "${OPTIONS[$key]}" ]]; then
+      ${cmd}
+   fi
+}
+
+function unless_option () {
+   local readonly key="$1" cmd="${@:2}"
+
+   if [[ -z "${OPTIONS[$key]}" ]]; then
+      ${cmd}
+   fi
+}
+
+function require_option () {
+   local readonly keys=("$@")
+
+   for key in "${keys[@]}"; do
+      if [[ "${OPTIONS[${key}]}" ]]; then
+         return
+      fi
+   done
+
+   if [[ "${#keys[@]}" -eq 1 ]]; then
+      fail "Missing required option: ${keys[0]}."
+   else
+      fail "At least one of the following options is required: ${keys[@]}."
+   fi
+}
+
+function pass_option () {
+   local readonly opt="$1" key="${2-}"
+
+   if [[ "${key}" ]]; then
+      echo "-${opt} ${OPTIONS[$key]}"
+   else
+      echo "-${opt}"
+   fi
+}
+
+## time ########################################################################
+
+function minsec () {
+   local readonly seconds="$1"
+
+   date -u -d "@${seconds}" +'%M mins %S seconds' \
+      | sed -e 's:01 \(min\|second\)s:1 \1:'      \
+            -e 's:0\([0-9]\):\1:g'                \
+            -e 's:0 mins ::'
+}
+
+## messages / logging ##########################################################
+
+function debug () {
+   local readonly file=$(basename "${BASH_SOURCE[1]}") func="${FUNCNAME[1]}" line="${BASH_LINENO[0]}"
+
+   if [[ "${OPTIONS['debug']}" ]]; then
+      printf "%-50s $*\n" "debug:${file}:${func}:${line}:" >&2
+   fi
+}
+
+## exiting #####################################################################
+
+function finish () {
+   local readonly message="${*-}"
+
+   if [[ "${message}" ]]; then
+      echo "${message}"
+   fi
+   echo
+   exit
+}
+
+function fail () {
+   local readonly message="${*-}"
+
+   if [[ "${message}" ]]; then
+      echo "${message}" >&2
+   fi
+   echo
+   exit 1
+}

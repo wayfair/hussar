@@ -1,0 +1,76 @@
+#!/bin/bash
+
+set -o nounset
+set -o errexit
+set -o errtrace
+set -o pipefail
+#set -o xtrace
+
+readonly HUSSAR_DIR="${HUSSAR_DIR:-$(dirname $(readlink -f "$0") | sed 's:/bin::')}"
+readonly PROJECT_DIR="${PROJECT_DIR=$(pwd -P)}"
+
+readonly PATH="/bin:/usr/bin"
+
+source "${HUSSAR_DIR}/lib/utility"
+source "${HUSSAR_DIR}/lib/patching"
+source "${HUSSAR_DIR}/config" || fail 'Missing config file. See readme.'
+[[ -f "${HUSSAR_DIR}/local-patch" ]] && source "${HUSSAR_DIR}/local-patch"
+
+declare -A OPTIONS=([debug]= [revision]=)
+
+function usage () {
+   echo "
+Usage: $0 [ -d ] [ -h ] [ -r <revision> ]
+   -d  Enable debugging messages.
+   -h  Display this usage text and exit.
+   -r  Checkout revision (branch or commit hash).
+"
+   finish
+}
+
+function main () {
+   if_option 'revision' "${HUSSAR_DIR}/bin/prepare-workspace -r ${OPTIONS['revision']}"
+   patch_autoloaders
+   make_class_index
+}
+
+function parse_options () {
+   while getopts ':dhr:' opt; do
+      case "${opt}" in
+         'd') set_option 'debug' ;;
+         'h') usage ;;
+         'r') set_option 'revision' $(git_commit_hash "${OPTARG}") ;;
+      esac
+   done
+
+   debug $(declare -p OPTIONS)
+}
+
+function make_class_index () {
+   local project_exclude_dirs=()
+   if [[ "${#PROJECT_EXCLUDE_DIRS[@]}" -gt 0 ]]; then
+      for dir in "${PROJECT_EXCLUDE_DIRS[@]}"; do
+         project_exclude_dirs+=( --exclude-dir "${dir}" )
+      done
+   fi
+
+   grep  --exclude-dir '.git'           \
+         "${project_exclude_dirs[@]}"   \
+         --exclude '.hhvm'              \
+         --include '*.php'              \
+         --no-filename                  \
+         --perl-regexp                  \
+         --only-matching                \
+         --recursive                    \
+         "${CLASS_NAME_REGEX}" ./       \
+      | sort -u --temporary-directory . \
+      | locate_class_files              \
+      | while read -r class file; do
+            echo "CLASS_INDEX['${class}']='${file}'"
+        done                            \
+           > "${PROJECT_DIR}/.class-index"
+}
+
+cd "${PROJECT_DIR}"
+parse_options "$@"
+main

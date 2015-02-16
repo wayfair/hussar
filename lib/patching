@@ -1,0 +1,59 @@
+#!/bin/bash
+
+# Patch auto_prepend file (eg, to add stubs or expand constants).
+# This may not be necessary for all codebases.
+function patch_auto_prepend () {
+   local readonly auto_prepend_file="${PROJECT_DIR}/auto_prepend.php"
+
+   local requirements
+   for file in "${HUSSAR_DIR}"/stubs/*; do
+      requirements+="require_once '${file}';"$'\n'
+   done
+   insert_requirements "${auto_prepend_file}" "${requirements}"
+}
+
+# Patch autoloaders to return the file for the corresponding class.
+function patch_autoloaders () {
+   local readonly autoloader="${PROJECT_DIR}/autoloader.php"
+
+   sed -i -e 's:\(include\|require\)\(_once\)\?.*\(\$\w\+\).*;:return("\3\");:' \
+       "${autoloader}"
+}
+
+# Verify that entries in CLASS_INDEX cache are still valid.
+function validate_class_index () {
+   SECONDS=0
+   for file in "${CLASS_INDEX[@]}"; do
+      if [[ "${file}" && ! -f "${file}" ]]; then
+         CLASS_INDEX["${file}"]=''
+      fi
+   done
+   debug "cache validation took $(minsec ${SECONDS})"
+}
+
+# Patch individual files as necessary (eg, to expand constants).
+# This may not be necessary for all codebases.
+function patch_file () {
+   local readonly file="$1"
+}
+
+# Read a newline delimited list of class names from stdin. Attempt to load each
+# class name using available autoloaders. If a class is found, print the class
+# name and associated file (relative to $PROJECT_DIR) on stdout.
+function locate_class_files () {
+   local readonly autoloader="${PROJECT_DIR}/autoloader.php"
+
+   php -r '
+      require_once "'"${autoloader}"'";
+
+      $fd = fopen("php://stdin", "r");
+
+      while (($class = fgets($fd)) !== false) {
+         $class = trim($class);
+         $file  = autoload($class) ?:
+                  "";
+         $file  = str_replace("'"${PROJECT_DIR}"'/", "", $file);
+         print "$class $file\n";
+      }
+   ' 2> /dev/null
+}

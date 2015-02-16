@@ -1,0 +1,235 @@
+#!/bin/bash
+
+set -o nounset
+set -o errexit
+set -o errtrace
+set -o pipefail
+#set -o xtrace
+
+readonly HUSSAR_DIR="${HUSSAR_DIR:-$(dirname $(readlink -f "$0") | sed 's:/bin::')}"
+readonly PROJECT_DIR="${PROJECT_DIR=$(pwd -P)}"
+
+readonly PATH="/bin:/usr/bin"
+
+source "${HUSSAR_DIR}/lib/utility"
+source "${HUSSAR_DIR}/lib/patching"
+source "${HUSSAR_DIR}/config" || fail 'Missing config file. See readme.'
+[[ -f "${HUSSAR_DIR}/local-patch" ]] && source "${HUSSAR_DIR}/local-patch"
+
+declare -A OPTIONS=([debug]= [file]= [full-repo]= [revision]= [update]=)
+declare -A CLASS_INDEX LINES_ADDED
+
+function usage () {
+   echo "
+Usage: $0 [ -d ] [ -f <file> ] [ -F ] [ -h ] [ -r <revision> ] [ -u ]
+   -d  Enable debugging messages.
+   -f  Patch only the specified file.
+   -F  Patch all files in the repository.
+   -h  Display this usage text and exit.
+   -r  Patch files modified in revision (branch or commit hash).
+   -u  Update latest patches cache with local patches.
+"
+   finish
+}
+
+function main () {
+   patch_auto_prepend
+   patch_autoloaders
+   files_to_patch | patch_files
+   if_option 'update' 'rsync_patches_upstream'
+}
+
+function parse_options () {
+   while getopts ':df:Fhr:u' opt; do
+      case "${opt}" in
+         'd') set_option 'debug' ;;
+         'f') set_option 'file' "${OPTARG}" \
+                  "stat ${OPTARG}"          \
+                  "No such file: ${OPTARG}" ;;
+         'F') set_option 'full-repo' ;;
+         'h') usage ;;
+         'r') set_option 'revision' $(git_commit_hash "${OPTARG}") ;;
+         'u') set_option 'update' ;;
+      esac
+   done
+
+   debug $(declare -p OPTIONS)
+}
+
+function files_to_patch () {
+   if [[ "${OPTIONS['full-repo']}" || "${OPTIONS['update']}" ]]; then
+      # The cut normalizes paths by removing dirs (and the trailing slash) ahead
+      # of the project root: "/path/to/project/dir/file" becomes "dir/file".
+      debug 'patch full repository'
+      build_full_file_list | cut -b "$(( ${#PROJECT_DIR} + 2 ))-"
+   elif [[ "${OPTIONS['revision']}" ]]; then
+      debug "patch files in revision"
+      git_files_in_revision "${OPTIONS['revision']}" 'present'
+   elif [[ "${OPTIONS['file']}" ]]; then
+      debug "patch single file: ${OPTIONS['file']}"
+      echo "${OPTIONS['file']}"
+   else
+      fail 'No files to patch.'
+   fi
+}
+
+function patch_files () {
+   # from make-class-index
+   if [[ -f "${PROJECT_DIR}/.class-index" ]]; then
+      source "${PROJECT_DIR}/.class-index"
+      validate_class_index
+   fi
+
+   # from patch-files (via rsync)
+   if [[ -f "${PROJECT_DIR}/.lines-added" ]]; then
+      source "${PROJECT_DIR}/.lines-added"
+   fi
+
+   # Open a fifo with write_lines_added as a coprocess. As we patch files, we
+   # tell write_lines_added how many lines were patched in and that coprocess
+   # stores the values in LINES_ADDED. When we finish patching, we close our end
+   # of the fifo and write_lines_added flushes the values to .lines-added.
+   mkfifo "${PROJECT_DIR}/.pipe"
+   write_lines_added < "${PROJECT_DIR}/.pipe" &
+   local readonly pid=$!
+   disown
+
+   local requirements i=0
+   local max=$(( $(nproc) - 2 ))
+   if [[ "${max}" -le 0 ]]; then max=1; fi
+
+   SECONDS=0
+
+   exec 3> "${PROJECT_DIR}/.pipe"
+   while read -r file; do
+      if [[ ! ("${file}" && -f "${file}") ]]; then
+         continue
+      fi
+
+      (
+         patch_file "${file}"
+         requirements=$(get_requirements "${file}")$'\n'
+         insert_requirements "${file}" "${requirements}"
+         echo "${file}" $(echo -n "${requirements}" | wc -l)
+      ) &
+      if (( ((i += 1) % "${max}") == 0 )); then
+         wait
+      fi
+   done > "${PROJECT_DIR}/.pipe"
+   wait
+   exec 3>&-
+
+   # bash will only `wait` for a pid if it's a child of the current process.
+   # Since we disowned, use `kill` here until the process doesn't exist.
+   while kill -s 0 "${pid}" &> /dev/null; do
+      sleep 1
+   done
+
+   debug "patching took $(minsec ${SECONDS})"
+}
+
+function write_lines_added () {
+   while read -r file lines; do
+      LINES_ADDED["${file//${PROJECT_DIR}\//}"]=${lines}
+   done
+
+   for key in "${!LINES_ADDED[@]}"; do
+      echo "LINES_ADDED['${key}']=${LINES_ADDED[$key]}"
+   done > "${PROJECT_DIR}/.lines-added"
+}
+
+function get_requirements () {
+   local readonly file="$1"
+
+   {
+      echo "includes/auto_prepend.php"
+      grep -oP "${CLASS_NAME_REGEX}" "${file}" \
+         | sort -u                             \
+         | lookup_class_files
+   } | while read -r class_file; do
+         if [[ "${class_file}" == ${file} ]]; then
+            continue
+         fi
+         echo "require_once '${PROJECT_DIR}/${class_file}';"
+       done
+}
+
+function lookup_class_files () {
+   while read -r class_name; do
+      local class_file="${CLASS_INDEX[${class_name}]-unset}"
+      if [[ "${class_file}" == unset ]]; then
+         read -r _ class_file <<< $(locate_class_files <<< "${class_name}")
+         CLASS_INDEX["${class_name}"]="${class_file}"
+      fi
+      if [[ "${class_file}" ]]; then
+         echo "${class_file}"
+      fi
+   done
+}
+
+function insert_requirements () {
+   local readonly file="$1"
+   local readonly requirements="$2"
+   local readonly sentinel='/* == patched for hhvm == */'
+
+   if grep -m 1 --fixed-strings "${sentinel}" "${file}" &> /dev/null; then
+      return
+   fi
+
+   if grep -m 1 '^namespace' "${file}" &> /dev/null; then
+      # Write requirements directly *after* the namespace declaration. The
+      # declaration can be a statement or introduce a block; in the latter
+      # case, we need to do our insertion after the opening brace (which may
+      # be on the next line).
+      perl -ni -e '
+         BEGIN { $done = 0; }
+         print;
+         if (!$done && /^\s*namespace.*[{;]/) {
+            print q('"${sentinel} ${requirements}"');
+            $done = 1;
+         }
+         elsif (!$done && /^\s*{/) {
+            print q('"${sentinel} ${requirements}"');
+            $done = 1;
+         }' "${file}";
+   else
+      # Write requirements directly *before* the first "<?" delimiter.
+      perl -ni -e '
+         BEGIN { $done = 0; }
+         if (!$done && /^<\?/) {
+            print q(<?php '"${sentinel} ${requirements}"' ?>);
+            $done = 1;
+         }
+         print;' "${file}";
+   fi
+}
+
+function rsync_patches_upstream () {
+   local readonly head=$(git_commit_hash)
+
+   local prev=''
+   if [[ -L "${HUSSAR_DIR}/patches/latest" ]]; then
+      prev=$(basename $(readlink "${HUSSAR_DIR}/patches/latest"))
+   fi
+
+   debug "rsync update cached patches: ${head}"
+
+   rsync --archive --delete --exclude .git --exclude .pipe \
+      "${PROJECT_DIR}/" "${HUSSAR_DIR}/patches/${head}"
+
+   ln -sfn "${HUSSAR_DIR}/patches/${head}" "${HUSSAR_DIR}/patches/latest"
+
+   if [[ "${prev}" && "${prev}" != "${head}" ]]; then
+      rm -rf "${HUSSAR_DIR}/patches/${prev}"
+   fi
+}
+
+function fin () {
+   rm -f "${PROJECT_DIR}/.pipe"
+}
+
+trap fin EXIT
+
+cd "${PROJECT_DIR}"
+parse_options "$@"
+main

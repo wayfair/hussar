@@ -1,0 +1,116 @@
+#!/bin/bash
+
+set -o nounset
+set -o errexit
+set -o errtrace
+set -o pipefail
+#set -o xtrace
+
+readonly HUSSAR_DIR="${HUSSAR_DIR:-$(dirname $(readlink -f "$0") | sed 's:/bin::')}"
+readonly PROJECT_DIR="${PROJECT_DIR=$(pwd -P)}"
+
+readonly PATH="/bin:/usr/bin"
+
+source "${HUSSAR_DIR}/lib/utility"
+source "${HUSSAR_DIR}/config" || fail 'Missing config file. See readme.'
+
+declare -A OPTIONS=([debug]= [force]= [revision]= [comparand]=)
+
+function usage () {
+   echo "
+Usage: $0 [ -d ] [ -f ] [ -h ] [ -r <revision> [ -t <revision> ] ]
+   -d  Enable debugging messages.
+   -f  Force: replace any existing diff-report.
+   -h  Display this usage text and exit.
+   -r  Show errors introduced by revision (branch or commit hash).
+   -t  Compare to revision instead of fork-point (branch or commit hash).
+"
+   finish
+}
+
+function main () {
+   unless_option 'force' check_report
+   make_report
+}
+
+function parse_options () {
+   while getopts ':dfhr:t:' opt; do
+      case "${opt}" in
+         'd') set_option 'debug' ;;
+         'f') set_option 'force' ;;
+         'h') usage ;;
+         'r') set_option 'revision' $(git_commit_hash "${OPTARG}") ;;
+         't') set_option 'comparand' $(git_commit_hash "${OPTARG}") ;;
+      esac
+   done
+
+   unless_option 'revision' set_option 'revision' $(git_commit_hash)
+   unless_option 'comparand' set_option 'comparand' $(git merge-base HEAD origin/master)
+
+   debug $(declare -p OPTIONS)
+}
+
+function check_report () {
+   local readonly revision="${OPTIONS['revision']}"
+   local readonly comparand="${OPTIONS['comparand']}"
+
+   if [[ -e "${HUSSAR_DIR}/reports/${revision}-${comparand}" ]]; then
+      echo "Report already exists for ${revision} and ${comparand} ."
+      echo
+      cat "${HUSSAR_DIR}/reports/${revision}-${comparand}"
+      fail
+   fi
+}
+
+function make_report () {
+   local readonly revision="${OPTIONS['revision']}"
+   local readonly comparand="${OPTIONS['comparand']}"
+   local readonly reports="${HUSSAR_DIR}/reports"
+
+   {
+      # pipe into cat to avoid interactive less (default pager)
+      git show --quiet "${revision}"
+      echo
+      git show --quiet "${comparand}"
+      echo
+   } | cat
+
+   # We ignore the report header and omit line number as an "unstable" column;
+   # reports are compared using just the rule, file, and data columns.
+   local readonly errors=$(
+      comm -23 <(tail -n +4 "${reports}/${revision}"  | cut -d ' ' -f 2- | sort) \
+               <(tail -n +4 "${reports}/${comparand}" | cut -d ' ' -f 2- | sort)
+   )
+
+   if [[ -z "${errors}" ]]; then
+      finish "No errors found between ${revision} and ${comparand}."
+   else
+      local readonly n=$(wc -l <<< "${errors}")
+      local readonly s=$(if [[ $n -eq 1 ]]; then echo ''; else echo 's'; fi)
+
+      echo "Found $n error$s between ${revision} and ${comparand}."$'\n'
+
+      {
+         while read -r rule file data; do
+            grep --no-filename --fixed-strings "${rule} ${file} ${data}" \
+               "${reports}/${revision}"
+         done < <(sort -u <<< "${errors}")
+      } | column -t               \
+        | perl -ne '
+            # Remove tabs from data column
+            chomp;
+            ($line_number, $rule, $file, $data) = /^(\d+\s+)(\w+\s+)(.+?\s+)(.+)$/;
+            $data =~ s/\s+/ /g;
+            print qq($line_number $rule $file $data) . "\n";
+          '                       \
+        | sort -k3,3 -k1,1n -k2,2 \
+        | tee "${reports}/${revision}-${comparand}"
+
+      echo
+      fail
+   fi
+}
+
+cd "${PROJECT_DIR}"
+parse_options "$@"
+main

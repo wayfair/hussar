@@ -1,0 +1,209 @@
+#!/bin/bash
+
+set -o nounset
+set -o errexit
+set -o errtrace
+set -o pipefail
+#set -o xtrace
+
+readonly HUSSAR_DIR="${HUSSAR_DIR:-$(dirname $(readlink -f "$0") | sed 's:/bin::')}"
+readonly PROJECT_DIR="${PROJECT_DIR=$(pwd -P)}"
+
+readonly PATH="/bin:/usr/bin"
+
+source "${HUSSAR_DIR}/lib/utility"
+source "${HUSSAR_DIR}/config" || fail 'Missing config file. See readme.'
+
+declare -A OPTIONS=(
+  [class-index]=
+  [debug]=
+  [force]=
+  [full-repo]=
+  [patchfile]=
+  [revision]=
+  [sync]=
+  [comparand]=
+  [update]=
+)
+
+function usage () {
+   echo "
+Usage: $0 [ -c ] [ -d ] [ -f ] [ -F ] [ -h ] [ -p <file> ] [ -r <revision ] [ -s ] [ -t <revision> ] [ -u ]
+   -c  Make class-index and exit.
+   -d  Enable debugging messages.
+   -f  Force: replace any existing reports.
+   -F  Patch all files in the repository.
+   -h  Display this usage text and exit.
+   -p  Show errors introduced by applying patch file.
+   -r  Show errors introduced by revision (branch or commit hash).
+   -s  Sync patch cache to working directory.
+   -t  Compare to revision or 'fork-point' (branch or commit hash).
+   -u  Update patch cache and latest report symlinks.
+
+   The sync, revision, and patchfile options can be combined and are performed
+   in the order listed here. For example, given all three options:
+
+      1. reset HEAD to origin/master (always)
+      2. reset HEAD to the patch cache and rsync files locally
+      3. checkout and/or delete files to mimic the revision
+      4. apply and commit the patchfile
+"
+   finish
+}
+
+function main () {
+   unless_option 'force' \
+      check_reports
+
+   if_option 'comparand' \
+      check_comparand_report
+
+   "${HUSSAR_DIR}/bin/prepare-workspace"                   \
+      $(if_option 'debug' pass_option 'd')                 \
+      $(if_option 'patchfile' pass_option 'p' 'patchfile') \
+      $(if_option 'revision' pass_option 'r' 'revision')   \
+      $(if_option 'sync' pass_option 's')
+
+   if_option 'class-index'                 \
+      "${HUSSAR_DIR}/bin/make-class-index" \
+         $(if_option 'debug' pass_option 'd')
+
+   if_option 'class-index' \
+      finish
+
+   # Patchfiles are applied and committed, so we need to grab the new HEAD and
+   # use that as the revision to target when patching files.
+   #
+   if_option 'patchfile'    \
+      set_option 'revision' \
+         $(git_commit_hash)
+
+   "${HUSSAR_DIR}/bin/patch-files"                       \
+      $(if_option 'debug' pass_option 'd')               \
+      $(if_option 'full-repo' pass_option 'F')           \
+      $(if_option 'revision' pass_option 'r' 'revision') \
+      $(if_option 'update' pass_option 'u')
+
+   "${HUSSAR_DIR}/bin/make-report"                       \
+      $(if_option 'debug' pass_option 'd')               \
+      $(if_option 'force' pass_option 'f')               \
+      $(if_option 'revision' pass_option 'r' 'revision') \
+      $(if_option 'update' pass_option 'u')
+
+   if_option 'comparand'                      \
+      "${HUSSAR_DIR}/bin/make-diff-report"    \
+         $(if_option 'debug' pass_option 'd') \
+         $(if_option 'force' pass_option 'f') \
+         $(pass_option 'r' 'revision')        \
+         $(pass_option 't' 'comparand')
+
+   fin &
+}
+
+function parse_options () {
+   # We don't want to init when the "-h" option is present, so this has to
+   # preceed executing that function. On the other hand, we want the "revision"
+   # and "comparand" options to be commit hashes, so we need to init before
+   # parsing for and assigning to those options.
+   while getopts ':h' opt; do
+      case "${opt}" in
+         'h') usage ;;
+      esac
+   done
+
+   init
+
+   OPTIND=1
+   while getopts ':cdfFp:r:st:u' opt; do
+      case "${opt}" in
+         'c') set_option 'class-index' ;;
+         'd') set_option 'debug' ;;
+         'f') set_option 'force' ;;
+         'F') set_option 'full-repo' ;;
+         'p') set_option 'patchfile' "${OPTARG}" \
+                  "stat ${OPTARG}"               \
+                  "No such file: ${OPTARG}" ;;
+         'r') set_option 'revision' $(git_commit_hash "${OPTARG}") ;;
+         's') set_option 'sync' ;;
+         't') set_option 'comparand' $(git_commit_hash "${OPTARG}") ;;
+         'u') set_option 'update' ;;
+      esac
+   done
+
+   if_option 'comparand' \
+      require_option 'revision' 'patchfile'
+
+   if [[ "${OPTIONS['patchfile']}" ]]; then
+      unless_option 'revision' \
+         set_option 'revision' $(git_commit_hash origin/master)
+
+      unless_option 'comparand' \
+         set_option 'comparand' $(git_commit_hash origin/master)
+   fi
+
+   debug $(declare -p OPTIONS)
+}
+
+function init () {
+   if [[ ! -d "${PROJECT_DIR}/.git" ]]; then
+      debug 'git clone'
+      git clone --quiet "${PROJECT_URL}" .
+      ln -s "${HUSSAR_DIR}/reports" "${PROJECT_DIR}/.hhvm"
+      "${HUSSAR_DIR}/bin/main" -c
+      "${HUSSAR_DIR}/bin/main" -F -u
+   else
+      git fetch --quiet --prune origin &> /dev/null
+   fi
+}
+
+function check_reports () {
+   local readonly revision="${OPTIONS['revision']}"
+   local readonly comparand="${OPTIONS['comparand']}"
+
+   if [[ ! "${revision}" ]]; then
+      return
+   fi
+
+   if [[ -f "${HUSSAR_DIR}/reports/${revision}-${comparand}" ]]; then
+      echo "Report already exists for ${revision} and ${comparand}."
+      echo
+      cat "${HUSSAR_DIR}/reports/${revision}-${comparand}"
+      fail
+   elif [[ ! "${comparand}" && -f "${HUSSAR_DIR}/reports/${revision}" ]]; then
+      echo "Report already exists for ${revision}."
+      finish
+   fi
+}
+
+function check_comparand_report () {
+   if [[ "${OPTIONS['force']}" \
+         || ! -f "${HUSSAR_DIR}/reports/${OPTIONS['comparand']}" ]]; then
+      echo "First, making report for ${OPTIONS['comparand']}."
+      (
+         "${HUSSAR_DIR}/bin/main"                    \
+            $(if_option 'debug' pass_option 'd')     \
+            $(if_option 'force' pass_option 'f')     \
+            $(if_option 'full-repo' pass_option 'F') \
+            $(pass_option 'r' 'comparand')           \
+            $(if_option 'sync' pass_option 's')
+      ) > /dev/null
+      if [[ "${OPTIONS['patchfile']}" ]]; then
+         echo "Next, making report for patch file."
+      else
+         echo "Next, making report for ${OPTIONS['revision']}."
+      fi
+      echo
+   fi
+}
+
+function fin () {
+   git gc --quiet --auto --prune=all
+   find "${HUSSAR_DIR}/reports" -type f \
+      -daystart -mtime +7               \
+      -not -name '.gitignore'           \
+      -delete
+}
+
+cd "${PROJECT_DIR}"
+parse_options "$@"
+main

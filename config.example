@@ -1,0 +1,31 @@
+#!/bin/bash
+
+# Project URL to clone from. See GIT URLS section in `git help clone` for full
+# information. If using ssh://, ensure keys are configured correctly.
+readonly PROJECT_URL='git@example.org:user/project.git'
+
+# Path to hhvm binary.
+readonly HHVM='/usr/bin/hhvm'
+
+# Bash array of project directories to exclude (eg, for third-party code) when
+# commands operate recursively across the whole project. Currently used when
+# compiling the .class-index and when patching the full repository.
+readonly PROJECT_EXCLUDE_DIRS=('some' 'ignored' 'dirs')
+
+# Perl-style regex used to match PHP class names. By default, we consider a
+# class name to be any string that starts with a (capital) letter followed by
+# zero or more word characters or backslashes, not ending with a backslash. We
+# say that the name ends at the first "::", "(", or ";" character, or before an
+# " as", as in "use \Foo\Bar as Baz;". This definition yields a superset of what
+# we want; any false-positives will be filtered out when invoking autoloaders.
+readonly CLASS_NAME_REGEX='(\b[A-Za-z]((\w|\\)*?\w)?)(?=(::|\(| as)|;)'
+
+# Bash array of HHVM rules to ignore. For a complete list of rules, see:
+# https://github.com/facebook/hhvm/blob/HHVM-3.3/hphp/compiler/analysis/core_code_error.inc
+readonly REPORT_EXCLUDE_RULES=('DeclaredConstantTwice')
+
+# Perl-style regex used to exclude lines from a report (eg, third-party code).
+# Inserted verbatim into PHP; single quotes and/or forward slashes must be escaped:
+#   $foo['bar']   --> "\$foo[\\'bar\\']" (escape backslash for bash parser)
+#   /path/to/file --> '\/path\/to\/file'
+readonly REPORT_EXCLUDE_REGEX=''

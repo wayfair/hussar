@@ -1,0 +1,120 @@
+#!/bin/bash
+
+set -o nounset
+set -o errexit
+set -o errtrace
+set -o pipefail
+#set -o xtrace
+
+readonly HUSSAR_DIR="${HUSSAR_DIR:-$(dirname $(readlink -f "$0") | sed 's:/bin::')}"
+readonly PROJECT_DIR="${PROJECT_DIR=$(pwd -P)}"
+
+readonly PATH="/bin:/usr/bin"
+
+source "${HUSSAR_DIR}/lib/utility"
+source "${HUSSAR_DIR}/config" || fail 'Missing config file. See readme.'
+
+declare -A OPTIONS=([debug]= [patchfile]= [revision]= [sync]=)
+
+function usage () {
+   echo "
+Usage: $0 [ -d ] [ -h ] [ -p <file> ] [ -r <revision> ] [ -s ]
+   -d  Enable debugging messages.
+   -h  Display this usage text and exit.
+   -p  Apply patch file.
+   -r  Checkout revision (branch or commit hash).
+   -s  Sync latest patches.
+
+   The sync, revision, and patchfile options can be combined and are performed
+   in the order listed here. For example, given all three options:
+
+      1. reset HEAD to origin/master (always)
+      2. reset HEAD to the patch cache and rsync files locally
+      3. checkout and/or delete files to mimic the revision
+      4. apply and commit the patchfile
+"
+   finish
+}
+
+function main () {
+   clean_and_checkout
+   if_option 'sync' 'rsync_patches_local'
+   if_option 'revision' 'checkout_revision'
+   if_option 'patchfile' 'apply_patch'
+}
+
+function parse_options () {
+   while getopts ':dhp:r:s' opt; do
+      case "${opt}" in
+         'd') set_option 'debug' ;;
+         'h') usage ;;
+         'p') set_option 'patchfile' "${OPTARG}" \
+                  "stat ${OPTARG}"               \
+                  "No such file: ${OPTARG}" ;;
+         'r') set_option 'revision' $(git_commit_hash "${OPTARG}") ;;
+         's') set_option 'sync' ;;
+      esac
+   done
+
+   debug $(declare -p OPTIONS)
+}
+
+function clean_and_checkout () {
+   git clean --quiet -fd --exclude .hhvm --exclude .class-index
+   git checkout --quiet --force origin/master
+   debug "head is:" $(git_commit_hash)
+}
+
+function rsync_patches_local {
+   if [[ -L "${HUSSAR_DIR}/patches/latest" ]]; then
+      local readonly latest_cache=$(basename $(readlink "${HUSSAR_DIR}/patches/latest"))
+      debug "rsync cached patches: ${latest_cache}"
+      git checkout --quiet --force "${latest_cache}"
+      SECONDS=0
+      rsync --archive --delete --exclude .git \
+         "${HUSSAR_DIR}/patches/${latest_cache}/" "${PROJECT_DIR}"
+      debug "rsync took $(minsec ${SECONDS})"
+      debug "head is:" $(git_commit_hash)
+   else
+      fail 'No cached patches available.'
+   fi
+}
+
+function checkout_revision () {
+   if [[ "${OPTIONS['sync']}" ]]; then
+      debug "checkout files in revision: ${OPTIONS['revision']}"
+      git_files_in_revision "${OPTIONS['revision']}" 'present' \
+         | xargs --no-run-if-empty git checkout --quiet --theirs "${OPTIONS['revision']}" --
+      git_files_in_revision "${OPTIONS['revision']}" 'absent' \
+         | xargs --no-run-if-empty rm -rf
+   else
+      debug "checkout revision: ${OPTIONS['revision']}"
+      git checkout --quiet --force "${OPTIONS['revision']}"
+   fi
+   debug "head is:" $(git_commit_hash)
+}
+
+function apply_patch () {
+   if [[ "${OPTIONS['sync']}" ]]; then
+      debug "checkout files in patchfile: ${OPTIONS['patchfile']}"
+      git_files_in_patch "${OPTIONS['patchfile']}" \
+         | while read -r file; do
+            if [[ -f "${file}" ]]; then
+               git checkout --quiet --theirs "${OPTIONS['revision']:-HEAD}" -- "${file}"
+            fi
+           done
+   fi
+   debug "apply and commit patchfile"
+   git apply -3 --index "${OPTIONS['patchfile']}" 2> /dev/null \
+      || fail 'Patchfile did not apply cleanly.'
+
+   git -c 'user.name=hussar' -c 'user.email=noreply@localhost' \
+      commit --quiet -m 'Apply patchfile.' &> /dev/null        \
+      || fail 'Patchfile did not yield any modifications.'
+
+   debug "head is:" $(git_commit_hash)
+}
+
+cd "${PROJECT_DIR}"
+parse_options "$@"
+main
