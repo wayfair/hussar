@@ -55,7 +55,7 @@ function make_class_index () {
    fi
 
    grep  --exclude-dir '.git'           \
-         "${project_exclude_dirs[@]}"   \
+         "${project_exclude_dirs[@]-}"  \
          --exclude '.hhvm'              \
          --include '*.php'              \
          --no-filename                  \

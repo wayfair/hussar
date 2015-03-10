@@ -10,16 +10,16 @@ function build_full_file_list () {
       done
    fi
 
-   find "${PROJECT_DIR}"              \
-      \(    -path '*/.git'            \
-         "${project_exclude_dirs[@]}" \
-      \) -prune                       \
-      -o                              \
-      -type f -name '*.php'           \
-      -not                            \
-      \(                              \
-            -name 'auto_prepend.php'  \
-         -o -name '*autoload*.php'    \
+   find "${PROJECT_DIR}"                       \
+      \(    -path '*/.git'                     \
+            "${project_exclude_dirs[@]--true}" \
+      \) -prune                                \
+      -o                                       \
+      -type f -name '*.php'                    \
+      -not                                     \
+      \(                                       \
+            -name 'auto_prepend.php'           \
+         -o -name '*autoload*.php'             \
       \) -print
 }
 
