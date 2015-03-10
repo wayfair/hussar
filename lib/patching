@@ -5,6 +5,10 @@
 function patch_auto_prepend () {
    local readonly auto_prepend_file="${PROJECT_DIR}/auto_prepend.php"
 
+   if [[ ! -d "${HUSSAR_DIR}/stubs" ]]; then
+      return
+   fi
+
    local requirements
    for file in "${HUSSAR_DIR}"/stubs/*; do
       requirements+="require_once '${file}';"$'\n'

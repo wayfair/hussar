@@ -133,8 +133,9 @@ script, which modifies files to correct for the following limitations:
      The HHVM team has done a great job reimplementing PHP functionality, but
      there are still [a number of incompatibilities][incompatibilities] beyond
      the two described above, and often projects use third-party code that can
-     clutter reports. The script adds any files under the `stubs/` directory to
-     the `auto_prepend.php` script so that these objects are always defined.
+     clutter reports. When present, the script adds `require_once` statements
+     for all files under the `stubs/` directory to the `auto_prepend.php` script
+     so that these objects are always defined.
 
    * **Runtime defined state:**
 
