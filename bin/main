@@ -199,6 +199,7 @@ function check_comparand_report () {
 function fin () {
    git gc --quiet --auto --prune=all
    find "${HUSSAR_DIR}/reports" -type f \
+      -user "${USER}"                   \
       -daystart -mtime +7               \
       -not -name '.gitignore'           \
       -delete
