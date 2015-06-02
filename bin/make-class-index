@@ -67,7 +67,7 @@ function make_class_index () {
       | locate_class_files              \
       | while read -r class file; do
             if [[ ! -f "${file}" ]]; then
-               continue
+               file=''
             fi
             echo "CLASS_INDEX['${class}']='${file}'"
         done                            \
