@@ -149,6 +149,8 @@ function get_requirements () {
    } | while read -r class_file; do
          if [[ "${class_file}" == ${file} ]]; then
             continue
+         elif [[ ! -f "${class_file}" ]]; then
+            continue
          fi
          echo "require_once '${PROJECT_DIR}/${class_file}';"
        done
