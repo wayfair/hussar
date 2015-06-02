@@ -66,6 +66,9 @@ function make_class_index () {
       | sort -u --temporary-directory . \
       | locate_class_files              \
       | while read -r class file; do
+            if [[ ! -f "${file}" ]]; then
+               continue
+            fi
             echo "CLASS_INDEX['${class}']='${file}'"
         done                            \
            > "${PROJECT_DIR}/.class-index"
