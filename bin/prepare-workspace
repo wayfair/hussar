@@ -85,7 +85,7 @@ function checkout_revision () {
    if [[ "${OPTIONS['sync']}" ]]; then
       debug "checkout files in revision: ${OPTIONS['revision']}"
       git_files_in_revision "${OPTIONS['revision']}" 'present' \
-         | xargs --no-run-if-empty git checkout --quiet --theirs "${OPTIONS['revision']}" --
+         | xargs --no-run-if-empty git checkout --quiet "${OPTIONS['revision']}" --
       git_files_in_revision "${OPTIONS['revision']}" 'absent' \
          | xargs --no-run-if-empty rm -rf
    else
@@ -101,7 +101,7 @@ function apply_patch () {
       git_files_in_patch "${OPTIONS['patchfile']}" \
          | while read -r file; do
             if [[ -f "${file}" ]]; then
-               git checkout --quiet --theirs "${OPTIONS['revision']:-HEAD}" -- "${file}"
+               git checkout --quiet "${OPTIONS['revision']:-HEAD}" -- "${file}"
             fi
            done
    fi
