@@ -61,6 +61,7 @@ function parse_options () {
 
 function clean_and_checkout () {
    git clean --quiet -fd --exclude .hhvm --exclude .class-index
+   git reset --hard HEAD
    git checkout --quiet --force origin/master
    debug "head is:" $(git_commit_hash)
 }
@@ -104,13 +105,18 @@ function apply_patch () {
             fi
            done
    fi
-   debug "apply and commit patchfile"
+   debug "apply patchfile"
    git apply -3 --index "${OPTIONS['patchfile']}" 2> /dev/null \
       || fail 'Patchfile did not apply cleanly.'
 
+   if git diff-index --quiet HEAD; then
+      fail 'Patchfile did not yield any modifications.'
+   fi
+
+   debug "commit patchfile"
    git -c 'user.name=hussar' -c 'user.email=noreply@localhost' \
       commit --quiet -m 'Apply patchfile.' &> /dev/null        \
-      || fail 'Patchfile did not yield any modifications.'
+      || fail 'Commit failed.'
 
    debug "head is:" $(git_commit_hash)
 }
