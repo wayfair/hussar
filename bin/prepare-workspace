@@ -61,7 +61,7 @@ function parse_options () {
 
 function clean_and_checkout () {
    git clean --quiet -fd --exclude .hhvm --exclude .class-index
-   git reset --hard HEAD
+   git reset --quiet --hard HEAD
    git checkout --quiet --force origin/master
    debug "head is:" $(git_commit_hash)
 }
