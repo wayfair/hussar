@@ -95,7 +95,8 @@ function make_report () {
             grep --no-filename --fixed-strings "${rule} ${file} ${data}" \
                "${reports}/${revision}"
          done < <(sort -u <<< "${errors}")
-      } | column -t               \
+      } | cut -b -1024 \
+        | column -t    \
         | perl -ne '
             # Remove tabs from data column
             chomp;
