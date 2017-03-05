@@ -192,7 +192,7 @@ specified revisions. Getting this right is tricky and requires keeping track of
 the hashes for `origin/master`, the patch cache, the revision, the comparand,
 and the patchfile (modulo which options are present).
 
-The former script maintains the workspace as necessary by reseting HEAD and
+The former script maintains the workspace as necessary by resetting HEAD and
 pulling down the patch cache, then replacing the cached versions of files with
 their equivalent version in the specified revision or patchfile. Patchfiles are
 then committed so that `bin/make-report` can save the report under the new
